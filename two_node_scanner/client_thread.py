@@ -8,9 +8,9 @@ parent = os.path.join(os.path.dirname(__file__), '..')
 sys.path.append(parent)
 from lopy_serial_if import Pyboard
 from time import sleep
+from threading import Thread
 
-
-class SenderManager(threading.Thread):
+class SenderManager(Thread):
     def __init__(self, port, node_id, leader=False, first_run=False):
         """
         Params:
@@ -38,7 +38,7 @@ class SenderManager(threading.Thread):
 
     def setup(self, config_str, offset=0):
         self.config = config_str
-        self.offest = offset
+        self.offset = offset
 
         # Soft reboot to get the receiver code loaded
         print('Rebooting')
@@ -47,19 +47,25 @@ class SenderManager(threading.Thread):
         # Import functions
         print('Importing functions')
         output = self.lopy_if.exec_('import sender')
-        self.lopy_if.exec_('sender.setup(%s, %s)'%(self.config, self.node_id))
+        print('sender.setup(%s, \'%s\')'%(self.config, self.node_id))
+        self.lopy_if.exec_('sender.setup(%s, \'%s\')'%(self.config, self.node_id))
         print('Sender ready', output)
 
-    def eval_tx_power(self):
+    def eval_tx_power(self, finalise):
         self.lopy_if.exec_('sender.eval_tx_power()')
+        if finalise:
+            # Before we finish, tell the receiver that the round is over
+            self.lopy_if.exec_('sender.complete_round(%s)'%(self.config))
+        # Done
 
     def run(self):
         """
         Runs one round with the current configuration
         """
-        self.lopy_if.exec_no_follow('sender.run_one_round(%d)'%(self.offset))
-        output = lopy_if.follow(timeout=None)
-        self.txd_packets = int(output.split()[-1])
+        self.lopy_if.exec_no_follow('sender.run_one_round(%d, True)'%(self.offset))
+        output = self.lopy_if.follow(timeout=None)
+        print(output)
+        self.txd_packets = int(output[0].split()[-1])
         if self.leader:
             # Before we finish, tell the receiver that the round is over
             self.lopy_if.exec_('sender.complete_round(%s)'%(self.config))

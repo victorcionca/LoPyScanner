@@ -1,17 +1,13 @@
 import sys
 import signal
 import threading
+import socket
+from time import sleep
 from client_thread import SenderManager
 
 
 SERVER='157.190.52.166'
 PORT=12345
-
-# Open serial connection to LoPy
-if len(sys.argv) < 2:
-    print('Usage: server.py <tty>')
-    sys.exit(1)
-
 
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -44,21 +40,17 @@ def stats_packet(a_sent, b_sent):
     return bytearray(pkt, 'utf-8')
 
 def write_configuration(sf, bw_idx, CR_idx, pw):
-    config_str = "config = {{\
-                            'sf':{0},\
-                            'bw_idx':{1},\
-                            'cr_idx':{2},\
-                            'pw':{3}\
-                            }}".format(sf, bw_idx, CR_idx, pw)
+    config_str = "{{'sf':{0}, 'bw_idx':{1}, 'cr_idx':{2}, 'pw':{3} }}"\
+			.format(sf, bw_idx, CR_idx, pw)
     return config_str
 
-def persist_results(path, a_pwr, b_pwr, a_pdr):
+def persist_results(path, a_pwr, b_pwr, act_a_pwr, act_b_pwr, a_pdr, b_pdr):
     """
     Adds results to the results file in path.
     If the file does not exist, it will be created
     """
     with open(path, 'a') as f:
-        f.write('%d,%d,%d\n'%(a_pwr, b_pwr, a_pdr))
+        f.write('%d,%d,%d,%d,%d,%d\n'%(a_pwr,b_pwr,act_a_pwr,act_b_pwr,a_pdr,b_pdr))
 
 # We first vary the power
 # Node B goes through all the levels
@@ -80,8 +72,8 @@ for b_power in range(2,14):
     for a_power in range(b_power, 14+1):
         print('Testing with A=%d, B=%d'%(a_power, b_power))
         # Load and initialise LoPy managers
-        lopyA = SenderManager('/dev/ttyUSB0', 'A')
-        lopyB = SenderManager('/dev/ttyUSB1', 'B')
+        lopyA = SenderManager('/dev/ttyUSB1', 'A', leader=True)
+        lopyB = SenderManager('/dev/ttyUSB0', 'B')
         config_str = write_configuration(_sf, _bw, _cr, a_power)
         lopyA.setup(config_str)
         config_str = write_configuration(_sf, _bw, _cr, b_power)
@@ -94,8 +86,8 @@ for b_power in range(2,14):
         # 2. Start evaluating TX power.
         #    Both block but that is the intended functionality,
         #    they need to run in sequence.
-        lopyA.eval_tx_power()
-        lopyB.eval_tx_power()
+        lopyA.eval_tx_power(False)
+        lopyB.eval_tx_power(True)
         print('Done evaluating power, starting exp')
         # 3. Start experiment. Non-blocking
         lopyA.start()
@@ -106,22 +98,30 @@ for b_power in range(2,14):
         lopyA.join()
         lopyB.join()
         sent_pkts = (lopyA.txd_packets, lopyB.txd_packets)
-        print('A sent %d; B sent %d'%(*(sent_pkts)))
+        print('A sent %d; B sent %d'%sent_pkts)
         # 4. Send stats to server, notifying it of experiment completion
         s.sendto(stats_packet(*sent_pkts), (SERVER, PORT))
         # 5. Receive results from server, check PDR
         a_pdr = None
+        b_pdr = None
         print('Waiting for results from server...',)
         while True:
-            # Packet format: 'rslt'|A_PDR (1B)|A_power (1B)|B_power (1B)
-            rcvd, addr = s.recvfrom(7)
-            if len(rcvd) < 7: continue
-            if str(rcvd[:4], 'utf-8') != 'rslt': continue
+            # Packet format: 'rslt'|A_PDR (1B)|B_PDR (1B)A_power (1B)|B_power (1B)
+            rcvd, addr = s.recvfrom(8)
+            print(rcvd, len(rcvd))
+            if len(rcvd) < 8:
+                print('Length wrong')
+                continue
+            if str(rcvd[:4], 'utf-8') != 'rslt':
+                print('Prefix wrong')
+                continue
             a_pdr = rcvd[4]
-            actual_a_power = -rcvd[5]
-            actual_b_power = -rcvd[6]
-        print(actual_a_power, actual_b_power, send_pkts, a_pdr)
-        persist_results(results_file, actual_a_power, actual_b_power, a_pdr)
+            b_pdr = rcvd[5]
+            actual_a_power = -rcvd[6]
+            actual_b_power = -rcvd[7]
+            break
+        print(actual_a_power, actual_b_power, sent_pkts, a_pdr, b_pdr)
+        persist_results(results_file, a_power, b_power, actual_a_power, actual_b_power, a_pdr, b_pdr)
         if a_pdr >= 95 and prev_pdr >= 95:
             # We have reached a satisfactory PDR for A, move to the next B power
             print('Found satisfactory threshold, increasing B\'s power now')

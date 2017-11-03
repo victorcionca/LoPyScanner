@@ -7,11 +7,12 @@ from time import sleep
 
 
 class SenderManager(threading.Thread):
-    def __init__(self, port, node_id, first_run=False):
+    def __init__(self, port, node_id, leader=False, first_run=False):
         """
         Params:
         port        -- serial port of LoPy board
         node_id     -- id associated to LoPy board (string).
+        leader      -- True if this is the node whose PDR is tested.
         first_run   -- Set to true to enable initial configuration,
                        mainly used for copying code to Flash only once.
         """
@@ -21,6 +22,7 @@ class SenderManager(threading.Thread):
         self.config = None
         self.offset = None
         self.txd_packets = 0
+        self.leader = leader
 
         self.lopy_if = Pyboard(self.port)
 
@@ -36,6 +38,7 @@ class SenderManager(threading.Thread):
         # Soft reboot to get the receiver code loaded
         print('Rebooting')
         self.lopy_if.hard_reboot()
+        sleep(1)
         # Import functions
         print('Importing functions')
         output = self.lopy_if.exec_('import sender')
@@ -53,4 +56,7 @@ class SenderManager(threading.Thread):
                                     %(self.config, self.node_id, self.offset))
         output = lopy_if.follow(timeout=None)
         self.txd_packets = int(output.split()[-1])
+        if self.leader:
+            # Before we finish, tell the receiver that the round is over
+            self.lopy_if.exec_no_follow('sender.complete_round(%s)'%(self.config))
         # Done

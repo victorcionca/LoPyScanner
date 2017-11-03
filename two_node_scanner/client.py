@@ -23,15 +23,18 @@ cr = [0,1,2,3]
 pw = range(2, 14+1)
 
 # Packet types
-pkt_types = ['init', 'start', 'end']
+pkt_types = ['init', 'strt', 'end']
 
-def init_packet(sf, bw_idx, cr_idx, a_pw, b_pw):
+# Results file
+results_file = 'results.csv'
+
+def config_packet(pkt_type, sf, bw_idx, cr_idx, a_pw, b_pw):
     """
     Creates a packet that contains the configuration.
     Packet structure is (4+5B):
     init | SF | BW_idx | CR_idx | A_power | B_power
     """
-    pkt = 'init'\
+    pkt = pkt_type\
             +chr(sf)+chr(bw_idx)+chr(cr_idx)\
             +chr(a_pw)+chr(b_pw)
     return bytearray(pkt, 'utf-8')
@@ -42,12 +45,20 @@ def stats_packet(a_sent, b_sent):
 
 def write_configuration(sf, bw_idx, CR_idx, pw):
     config_str = "config = {{\
-                            'sf':{1},\
-                            'bw_idx':{2},\
-                            'cr_idx':{3},\
-                            'pw':{4}\
+                            'sf':{0},\
+                            'bw_idx':{1},\
+                            'cr_idx':{2},\
+                            'pw':{3}\
                             }}".format(sf, bw_idx, CR_idx, pw)
     return config_str
+
+def persist_results(path, a_pwr, b_pwr, a_pdr):
+    """
+    Adds results to the results file in path.
+    If the file does not exist, it will be created
+    """
+    with open(path, 'a') as f:
+        f.write('%d,%d,%d\n'%(a_pwr, b_pwr, a_pdr))
 
 # We first vary the power
 # Node B goes through all the levels
@@ -71,13 +82,13 @@ for b_power in range(2,14):
         lopyA = SenderManager('/dev/ttyUSB0', 'A')
         lopyB = SenderManager('/dev/ttyUSB1', 'B')
         config_str = write_configuration(_sf, _bw, _cr, a_power)
-        lopyA.connect(config_str)
+        lopyA.setup(config_str)
         config_str = write_configuration(_sf, _bw, _cr, b_power)
-        lopyB.connect(config_str)
+        lopyB.setup(config_str)
 
         # 1. Send configuration to server
-        s.sendto(init_packet(_sf, _bw, _cr, a_power, b_power), (SERVER, PORT))
-        sleep(1)    # Wait for server to be ready
+        s.sendto(config_packet('init', _sf, _bw, _cr, a_power, b_power), (SERVER, PORT))
+        sleep(3)    # Wait for server to be ready
         # 2. Start evaluating TX power
         lopyA.eval_tx_power()
         lopyB.eval_tx_power()
@@ -85,7 +96,7 @@ for b_power in range(2,14):
         lopyA.start()
         lopyB.start()
         # Tell server to start the experiment
-        s.sendto(bytearray('strt', 'utf-8'), (SERVER, PORT))
+        s.sendto(config_packet('strt', _sf, _bw, _cr, a_power, b_power), (SERVER, PORT))
         # Wait until experiment is complete
         lopyA.join()
         lopyB.join()
@@ -100,12 +111,12 @@ for b_power in range(2,14):
             if len(rcvd) < 7: continue
             if str(rcvd[:4], 'utf-8') != 'rslt': continue
             a_pdr = rcvd[4]
-            actual_a_power = rcvd[5]
-            actual_b_power = rcvd[6]
+            actual_a_power = -rcvd[5]
+            actual_b_power = -rcvd[6]
         print(actual_a_power, actual_b_power, send_pkts, a_pdr)
+        persist_results(results_file, actual_a_power, actual_b_power, a_pdr)
         if a_pdr >= 95 and prev_pdr >= 95:
             # We have reached a satisfactory PDR for A, move to the next B power
-            # TODO Persist results here?
             break
         # Otherwise continue increasing the A power
         prev_pdr = a_pdr

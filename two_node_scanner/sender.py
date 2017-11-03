@@ -59,9 +59,19 @@ def run_one_round(config, node_id, offset):
 
     # Open comms socket
     s = socket.socket(socket.AF_LORA, socket.SOCK_RAW)
+    s.setblocking(False)
 
     # Wait for broadcast message from receiver, as signal to start round
-    # TODO
+    while True:
+        p = s.recv(5)
+        if len(p) < 5:
+            sleep(0.05)
+            continue
+        if str(p, 'utf-8') != 'synch':
+            sleep(0.05)
+            continue
+        else:
+            break
 
     # Signal received, start sending
     pkts_sent = 0
@@ -76,3 +86,21 @@ def run_one_round(config, node_id, offset):
     print('Round complete '+str(pkts_sent))
 
     s.close()
+
+def complete_round(config):
+    # Init and configure LoRa
+    lora = LoRa(mode=LoRa.LORA, tx_power=14)
+
+    # Configure LoRa
+    lora.frequency(864000000)
+    lora.sf(config['sf'])
+    lora.bandwidth(bw[config['bw_idx']][1])
+    lora.coding_rate(cr[config['cr_idx']][1])
+
+    # Open comms socket
+    s = socket.socket(socket.AF_LORA, socket.SOCK_RAW)
+
+    # Send 5 completion packets to the server to allow it to finish gracefully
+    for i in range(5):
+        s.send('done'+'1'*28)
+        sleep(1)

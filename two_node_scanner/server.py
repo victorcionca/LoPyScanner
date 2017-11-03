@@ -22,15 +22,10 @@ def int_handler(signum, frame):
 
 PORT=12345
 
-def write_configuration(cfg_id, sf, bw_idx, CR_idx, pw):
-    config_str = "config = {{\
-                            'cfg_id':{0},\
-                            'sf':{1},\
-                            'bw_idx':{2},\
-                            'cr_idx':{3},\
-                            'pw':{4}\
-                            }}".format(cfg_id, sf, bw_idx, CR_idx, pw)
-    return dedent(config_str)
+def write_configuration(sf, bw_idx, CR_idx):
+    config_str = "config = {{'sf':{0}, 'bw_idx':{1}, 'cr_idx':{2}}}"\
+                            .format(sf, bw_idx, CR_idx)
+    return config_str
 
 
 # Open serial connection to LoPy
@@ -53,34 +48,60 @@ print('Rebooting')
 lopy_if.reboot()
 # Import functions
 print('Importing functions')
-output = lopy_if.exec_('from receiver import persist_round, run_one_round')
+output = lopy_if.exec_('import receiver')
 print('Receiver ready', output)
 
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 s.bind(('', PORT))
 
+round_stats = {'a_pwr':0, 'b_pwr':0, 'a_pdr':0}
+
+def init_lopy(lopy_if):
+    print('Rebooting')
+    lopy_if.hard_reboot()
+    sleep(1)
+    # Import functions
+    print('Importing functions')
+    output = lopy_if.exec_('import receiver')
+    print('Receiver ready', output)
+
 def prepare_power_eval(sock):
     """
     First step, receive probe packets from the senders and
     measure their RX power.
     """
-    cfg_bytes = sock.recvfrom(5)
+    cfg_bytes, = sock.recvfrom(5)
     [sf,bw_idx,cr_idx,a_pw,b_pw] = cfg_bytes
-    # Tell receiver to start receiving packets, and measuring RSSI
-    #   Receiver needs to store RSSI per sender ID
-    # Read average values from receiver
+    cfg_str = write_configuration(sf,bw_idx,cr_idx)
+    # Prepare receiver for a new round. Blocking, <2s
+    init_lopy(lopy_if)
+    # Put receiver node into eval tx mode
+    lopy_if.exec_no_follow('receiver.eval_tx_power(%s)'%cfg_str)
+    # Read average values from receiver. Blocking, takes 20s
+    output = lopy_if.follow(timeout=None)
     # Store these values in global variables
-    pass
+    round_stats['a_pwr'] = int(output.split())[0]
+    round_stats['b_pwr'] = int(output.split())[1]
+    print(round_stats)
 
 def start_experiment(sock):
+    cfg_bytes, = sock.recvfrom(5)
+    [sf,bw_idx,cr_idx,a_pw,b_pw] = cfg_bytes
+    cfg_str = write_configuration(sf,bw_idx,cr_idx)
     # Tell RX to signal start exp to the two senders.
-    # Then RX should start listening for packets
-    pass
+    lopy_if.exec_no_follow('receiver.run_one_round(%s)'%cfg_str)
+    a_pdr = lopy_if.follow(timeout=None)
+    round_stats['a_pdr'] = int(a_pdr)
+    print(round_stats)
 
-def stop_experiment(sock):
-    # Stop RX
-    # Get values from RX
+def stop_experiment(sock, addr):
+    rslt_pkt = 'rslt'\
+                +chr(round_stats['a_pdr'])\
+                +chr(-round_stats['a_pwr'])\
+                +chr(-round_stats['b_pwr'])
+    sock.sendto(rslt_pkt, addr)
+    # Round is done
 
 print('Done setup, waiting clients')
 while True:
@@ -98,36 +119,4 @@ while True:
          'fini': stop_experiment}[str(rcvd[:4], 'utf-8')](s)
     except KeyError:
         continue
-    if str(rcvd[:4], 'utf-8') == 'next':    # Check header
-        print('Received config:', rcvd)
-        # Generate configuration string
-        cfg_id = (rcvd[4]<<8)+rcvd[5]
-        config_str = write_configuration(cfg_id, *rcvd[6:])
-        print('Generated configuration')
-        # Interrupt running code
-        lopy_if.cancel_execution()
-        print('Canceled current execution')
-        if not first_time:
-            # Send command to write logs
-            output = lopy_if.exec_('persist_round()')
-            print('Wrote logs:',output)
-            output = int(output)
-            # Download logs from device, for previous config
-            lopy_if.get(RESULT_PATH%output, LOCAL_RESULT_PATH%output)
-            print('Downloaded logs: results/result_%05d'%output)
-            # Delete the logs from the device, to save space
-            lopy_if.remove(RESULT_PATH%output)
-            print('Deleted logs from device')
-        # First perform hard reboot to reset LoRa stack
-        lopy_if.hard_reboot()
-        # Wait a bit
-        sleep(1)
-        # Import functions
-        output = lopy_if.exec_('from receiver import persist_round, run_one_round')
-        # Send command to run round
-        print('Running next round: run_one_round(%s)'%config_str)
-        lopy_if.exec_no_follow('run_one_round(%s)'%config_str)
-        first_time = False
-    else:
-        print('I Recvd crap', rcvd, rcvd[:4], rcvd[:4] == 'next')
-        continue
+

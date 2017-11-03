@@ -3,7 +3,8 @@ import socket
 import ujson
 from time import sleep
 
-round_results = {'config':None, 'results':[]}
+# Global variable to store the number of packets received from A
+a_pdr = 0
 
 CONFIG_PATH = 'result_%05d'
 # LoRa parameters
@@ -33,7 +34,7 @@ def eval_tx_power(config):
     sender_probes = {'A':0, 'B':0}
 
     # Init and configure LoRa
-    lora = LoRa(mode=LoRa.LORA, tx_power=config['pw'])
+    lora = LoRa(mode=LoRa.LORA, tx_power=14)
 
     # Configure LoRa
     lora.frequency(864000000)
@@ -48,18 +49,19 @@ def eval_tx_power(config):
     collected = 0
     while collected < 20:
         p = s.recv(32)
-        if len(p) < 32 or str(p[:4], 'utf-8') != 'node':
+        node_id = str(p[:5], 'utf-8')
+        if len(p) < 32 or node_id[:4] != 'node':
             sleep(0.05)
             continue
         else:
             stats = lora.stats()
-            sender_probes[p[5]] += stats.rssi
+            sender_probes[node_id[5]] += stats.rssi
             collected += 1
     sender_probes['A'] /= 10.0
     sender_probes['B'] /= 10.0
 
     print(sender_probes['A'], sender_probes['B'])
-
+    s.close()
 
 def run_one_round(config):
     """
@@ -67,15 +69,14 @@ def run_one_round(config):
     Runs a new round, recording packet statistics.
     Parameters:
     config  -- configuration dictionary:
-               {'sf', 'bw_idx', 'cr_idx', 'pw', 'cfg_id'}
+               {'sf', 'bw_idx', 'cr_idx'}
     """
 
     # Clear the round
-    round_results['config'] = config
-    round_results['results'] = []
+    a_pdr = 0
 
     # Init and configure LoRa
-    lora = LoRa(mode=LoRa.LORA, tx_power=config['pw'])
+    lora = LoRa(mode=LoRa.LORA, tx_power=14)
 
     # Configure LoRa
     lora.frequency(864000000)
@@ -87,15 +88,27 @@ def run_one_round(config):
     sleep(5)
 
 
-    # Start listening
+    # Open the lora socket
     s = socket.socket(socket.AF_LORA, socket.SOCK_RAW)
     s.setblocking(False)
 
+    # First thing is to broadcast the synch message
+    s.send('synch')
+
+    # Start listening for the probes
     while True:
         p = s.recv(32)
-        if len(p) < 32 or str(p[:4], 'utf-8') != 'pack':
+        node_id = str(p[:5], 'utf-8')
+        if len(p) < 32:
             sleep(0.05)
             continue
-        else:
+        if node_id[4] == 'node':
             stats = lora.stats()
-            round_results['results'].append(stats)
+            if node_id[5] == 'A':
+                a_pdr += 1
+        elif node_id[4] == 'done':
+            break
+        else:
+            continue
+
+    print(a_pdr)

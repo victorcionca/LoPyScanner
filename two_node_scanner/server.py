@@ -1,24 +1,15 @@
 import sys
+# Hack to allow loading of the lopy_serial_if module from the parent directory
+import os
+parent = os.path.join(os.path.dirname(__file__), '..')
+sys.path.append(parent)
 import socket
 from lopy_serial_if import Pyboard
 from time import sleep
-import signal
-from textwrap import dedent
 
 RESULT_PATH='/flash/result_%05d'
 LOCAL_RESULT_PATH='results/result_%05d'
 
-def int_handler(signum, frame):
-    lopy_if.cancel_execution()
-    sleep(1)
-    print('Saving final logs')
-    output_id = int(lopy_if.exec_('persist_round()'))
-    print('Downloading',RESULT_PATH%output_id,)
-    lopy_if.get(RESULT_PATH%output_id, LOCAL_RESULT_PATH%output_id)
-    print('Done')
-    sleep(1)
-    print('Exiting')
-    sys.exit(0)
 
 PORT=12345
 
@@ -57,16 +48,17 @@ s.bind(('', PORT))
 
 round_stats = {'a_pwr':0, 'b_pwr':0, 'a_pdr':0}
 
-def init_lopy(lopy_if):
+def init_lopy(lopy_if, config):
     print('Rebooting')
     lopy_if.hard_reboot()
     sleep(1)
     # Import functions
     print('Importing functions')
     output = lopy_if.exec_('import receiver')
+    lopy_if.exec_('receiver.setup(%s)'%config)
     print('Receiver ready', output)
 
-def prepare_power_eval(sock):
+def prepare_power_eval(sock, addr):
     """
     First step, receive probe packets from the senders and
     measure their RX power.
@@ -74,10 +66,11 @@ def prepare_power_eval(sock):
     cfg_bytes, = sock.recvfrom(5)
     [sf,bw_idx,cr_idx,a_pw,b_pw] = cfg_bytes
     cfg_str = write_configuration(sf,bw_idx,cr_idx)
+    print('Starting power eval with config %s', cfg_str)
     # Prepare receiver for a new round. Blocking, <2s
-    init_lopy(lopy_if)
+    init_lopy(lopy_if, cfg_str)
     # Put receiver node into eval tx mode
-    lopy_if.exec_no_follow('receiver.eval_tx_power(%s)'%cfg_str)
+    lopy_if.exec_no_follow('receiver.eval_tx_power()')
     # Read average values from receiver. Blocking, takes 20s
     output = lopy_if.follow(timeout=None)
     # Store these values in global variables
@@ -85,21 +78,23 @@ def prepare_power_eval(sock):
     round_stats['b_pwr'] = int(output.split())[1]
     print(round_stats)
 
-def start_experiment(sock):
+def start_experiment(sock, addr):
     cfg_bytes, = sock.recvfrom(5)
     [sf,bw_idx,cr_idx,a_pw,b_pw] = cfg_bytes
     cfg_str = write_configuration(sf,bw_idx,cr_idx)
     # Tell RX to signal start exp to the two senders.
-    lopy_if.exec_no_follow('receiver.run_one_round(%s)'%cfg_str)
+    print('Starting experiment')
+    lopy_if.exec_no_follow('receiver.run_one_round()')
     a_pdr = lopy_if.follow(timeout=None)
     round_stats['a_pdr'] = int(a_pdr)
-    print(round_stats)
+    print('Experiment done. Stats: %s'%(str(round_stats)))
 
 def stop_experiment(sock, addr):
     rslt_pkt = 'rslt'\
                 +chr(round_stats['a_pdr'])\
                 +chr(-round_stats['a_pwr'])\
                 +chr(-round_stats['b_pwr'])
+    print('All done. Reporting: %s'%rslt_pkt)
     sock.sendto(rslt_pkt, addr)
     # Round is done
 
@@ -116,7 +111,7 @@ while True:
     try:
         {'init': prepare_power_eval,
          'strt': start_experiment,
-         'fini': stop_experiment}[str(rcvd[:4], 'utf-8')](s)
+         'fini': stop_experiment}[str(rcvd[:4], 'utf-8')](s, addr)
     except KeyError:
         continue
 

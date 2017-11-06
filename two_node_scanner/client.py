@@ -71,13 +71,14 @@ _bw = 1
 _cr = 0
 
 from itertools import product
-lopyA = SenderManager('/dev/ttyUSB0', 'A', first_run=True)
-lopyB = SenderManager('/dev/ttyUSB1', 'B', first_run=True)
+SenderManager.upload_code('/dev/ttyUSB0')
+SenderManager.upload_code('/dev/ttyUSB1')
 for b_power in range(2,14):
     # One round has several steps
 
     prev_pdr = 0
     for a_power in range(b_power, 14+1):
+        print('Testing with A=%d, B=%d'%(a_power, b_power))
         # Load and initialise LoPy managers
         lopyA = SenderManager('/dev/ttyUSB0', 'A')
         lopyB = SenderManager('/dev/ttyUSB1', 'B')
@@ -87,12 +88,16 @@ for b_power in range(2,14):
         lopyB.setup(config_str)
 
         # 1. Send configuration to server
+        print('Sending configuration to server')
         s.sendto(config_packet('init', _sf, _bw, _cr, a_power, b_power), (SERVER, PORT))
         sleep(3)    # Wait for server to be ready
-        # 2. Start evaluating TX power
+        # 2. Start evaluating TX power.
+        #    Both block but that is the intended functionality,
+        #    they need to run in sequence.
         lopyA.eval_tx_power()
         lopyB.eval_tx_power()
-        # 3. Start experiment
+        print('Done evaluating power, starting exp')
+        # 3. Start experiment. Non-blocking
         lopyA.start()
         lopyB.start()
         # Tell server to start the experiment
@@ -101,10 +106,12 @@ for b_power in range(2,14):
         lopyA.join()
         lopyB.join()
         sent_pkts = (lopyA.txd_packets, lopyB.txd_packets)
+        print('A sent %d; B sent %d'%(*(sent_pkts)))
         # 4. Send stats to server, notifying it of experiment completion
         s.sendto(stats_packet(*sent_pkts), (SERVER, PORT))
         # 5. Receive results from server, check PDR
         a_pdr = None
+        print('Waiting for results from server...',)
         while True:
             # Packet format: 'rslt'|A_PDR (1B)|A_power (1B)|B_power (1B)
             rcvd, addr = s.recvfrom(7)
@@ -117,6 +124,7 @@ for b_power in range(2,14):
         persist_results(results_file, actual_a_power, actual_b_power, a_pdr)
         if a_pdr >= 95 and prev_pdr >= 95:
             # We have reached a satisfactory PDR for A, move to the next B power
+            print('Found satisfactory threshold, increasing B\'s power now')
             break
         # Otherwise continue increasing the A power
         prev_pdr = a_pdr

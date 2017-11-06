@@ -13,34 +13,24 @@ bw = [(0,LoRa.BW_125KHZ), (1,LoRa.BW_250KHZ), (2,LoRa.BW_500KHZ)]
 cr = [(1, LoRa.CODING_4_5), (2, LoRa.CODING_4_6), (3, LoRa.CODING_4_7), (4, LoRa.CODING_4_8)]
 pw = range(2, 14+1)
 
-def persist_round():
-    """
-    Writes the contents of the round status to flash.
-    Uses the configuration file to determine the config
+lora = LoRa(mode=LoRa.LORA)
 
-    Returns the configuration id of the persisted results
-    """
-    config = round_results['config']
-    with open(CONFIG_PATH%config['cfg_id'], 'w') as f:
-        f.write('config:%s\n'%ujson.dumps(round_results['config']))
-        for st in round_results['results']:
-            f.write('%s\n'%str(st))
-    print(config['cfg_id'])
-
-def eval_tx_power(config):
-    """
-    Receives the sender probes and evaluates their tx power
-    """
-    sender_probes = {'A':0, 'B':0}
-
+def setup(config):
+    """One time setup"""
     # Init and configure LoRa
-    lora = LoRa(mode=LoRa.LORA, tx_power=14)
+    lora.init(mode=LoRa.LORA, tx_power=14)
 
     # Configure LoRa
     lora.frequency(864000000)
     lora.sf(config['sf'])
     lora.bandwidth(bw[config['bw_idx']][1])
     lora.coding_rate(cr[config['cr_idx']][1])
+
+def eval_tx_power():
+    """
+    Receives the sender probes and evaluates their tx power
+    """
+    sender_probes = {'A':0, 'B':0}
 
     # Start sending
     s = socket.socket(socket.AF_LORA, socket.SOCK_RAW)
@@ -63,30 +53,17 @@ def eval_tx_power(config):
     print(sender_probes['A'], sender_probes['B'])
     s.close()
 
-def run_one_round(config):
+def run_one_round():
     """
     Configures the LoRa based on the stored configuration.
     Runs a new round, recording packet statistics.
-    Parameters:
-    config  -- configuration dictionary:
-               {'sf', 'bw_idx', 'cr_idx'}
     """
 
     # Clear the round
     a_pdr = 0
 
-    # Init and configure LoRa
-    lora = LoRa(mode=LoRa.LORA, tx_power=14)
-
-    # Configure LoRa
-    lora.frequency(864000000)
-    lora.sf(config['sf'])
-    lora.bandwidth(bw[config['bw_idx']][1])
-    lora.coding_rate(cr[config['cr_idx']][1])
-
     # Sleep a while to ensure that configuration is set
-    sleep(5)
-
+    sleep(2)
 
     # Open the lora socket
     s = socket.socket(socket.AF_LORA, socket.SOCK_RAW)
@@ -111,4 +88,5 @@ def run_one_round(config):
         else:
             continue
 
+    s.close()
     print(a_pdr)

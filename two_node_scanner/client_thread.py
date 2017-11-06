@@ -2,6 +2,10 @@
 This thread manages the LoPy board and reports to the master.
 """
 import socket
+# Hack to allow loading of the lopy_serial_if module from the parent directory
+import os, sys
+parent = os.path.join(os.path.dirname(__file__), '..')
+sys.path.append(parent)
 from lopy_serial_if import Pyboard
 from time import sleep
 
@@ -26,10 +30,11 @@ class SenderManager(threading.Thread):
 
         self.lopy_if = Pyboard(self.port)
 
-        if first_run:
-            # Only copy code to flash the first time, to save the flash
-            print('Uploading sender code')
-            self.lopy_if.put('/flash/sender.py', 'sender.py')
+    @classmethod
+    def upload_code(cls, port):
+        lopy_if = Pyboard(port)
+        print('Uploading sender code')
+        lopy_if.put('/flash/sender.py', 'sender.py')
 
     def setup(self, config_str, offset=0):
         self.config = config_str
@@ -42,21 +47,20 @@ class SenderManager(threading.Thread):
         # Import functions
         print('Importing functions')
         output = self.lopy_if.exec_('import sender')
+        self.lopy_if.exec_('sender.setup(%s, %s)'%(self.config, self.node_id))
         print('Sender ready', output)
 
     def eval_tx_power(self):
-        self.lopy_if.exec_('sender.eval_tx_power(%s,%s)'
-                                    %(self.config, self.node_id))
+        self.lopy_if.exec_('sender.eval_tx_power()')
 
     def run(self):
         """
         Runs one round with the current configuration
         """
-        self.lopy_if.exec_no_follow('sender.run_one_round(%s, %s, %d)'
-                                    %(self.config, self.node_id, self.offset))
+        self.lopy_if.exec_no_follow('sender.run_one_round(%d)'%(self.offset))
         output = lopy_if.follow(timeout=None)
         self.txd_packets = int(output.split()[-1])
         if self.leader:
             # Before we finish, tell the receiver that the round is over
-            self.lopy_if.exec_no_follow('sender.complete_round(%s)'%(self.config))
+            self.lopy_if.exec_('sender.complete_round(%s)'%(self.config))
         # Done

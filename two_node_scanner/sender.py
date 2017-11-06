@@ -12,14 +12,14 @@ bw = [(0,LoRa.BW_125KHZ), (1,LoRa.BW_250KHZ), (2,LoRa.BW_500KHZ)]
 cr = [(0, LoRa.CODING_4_5), (1, LoRa.CODING_4_6), (2, LoRa.CODING_4_7), (3, LoRa.CODING_4_8)]
 pw = range(2, 14+1)
 
+lora = LoRa(mode=LoRa.LORA)
+node_id = None
 
-def eval_tx_power(config, node_id):
-    """
-    Sends 10 packets, with the given configuration,
-    so that the receiver can estimate the RX power.
-    """
+def setup(config, node_id):
+    """Initial setup. Once per round."""
+
     # Init and configure LoRa
-    lora = LoRa(mode=LoRa.LORA, tx_power=config['pw'])
+    lora.init(mode=LoRa.LORA, tx_power=config['pw'])
 
     # Configure LoRa
     lora.frequency(864000000)
@@ -27,6 +27,12 @@ def eval_tx_power(config, node_id):
     lora.bandwidth(bw[config['bw_idx']][1])
     lora.coding_rate(cr[config['cr_idx']][1])
 
+
+def eval_tx_power():
+    """
+    Sends 10 packets, with the given configuration,
+    so that the receiver can estimate the RX power.
+    """
     # Start sending
     s = socket.socket(socket.AF_LORA, socket.SOCK_RAW)
 
@@ -38,24 +44,13 @@ def eval_tx_power(config, node_id):
 
     s.close()
 
-def run_one_round(config, node_id, offset):
+def run_one_round(offset):
     """
     Configures the LoRa based on the stored configuration.
     Runs a new round, recording packet statistics.
     Params:
-    config  -- {'cfg_id', 'sf', 'bw_idx', 'cr_idx', 'pw'}
-    node_id -- id to send in packet
     offset  -- offset of sending packets, from start signal
     """
-
-    # Init and configure LoRa
-    lora = LoRa(mode=LoRa.LORA, tx_power=config['pw'])
-
-    # Configure LoRa
-    lora.frequency(864000000)
-    lora.sf(config['sf'])
-    lora.bandwidth(bw[config['bw_idx']][1])
-    lora.coding_rate(cr[config['cr_idx']][1])
 
     # Open comms socket
     s = socket.socket(socket.AF_LORA, socket.SOCK_RAW)
@@ -76,7 +71,8 @@ def run_one_round(config, node_id, offset):
     # Signal received, start sending
     pkts_sent = 0
     for i in range(100):
-        sleep(offset)               # Create an offset
+        if offset > 0:
+            sleep(offset)               # Create an offset
         pkt = 'node'+node_id+'1'*27  # header + counter + padding up to 32B
         s.send(pkt)
         rgbled({0:0x7f0000, 1:0x0}[i%2])
@@ -88,8 +84,8 @@ def run_one_round(config, node_id, offset):
     s.close()
 
 def complete_round(config):
-    # Init and configure LoRa
-    lora = LoRa(mode=LoRa.LORA, tx_power=14)
+    # Reconfigure with higher TX power to make sure that transmission go through
+    lora.init(mode=LoRa.LORA, tx_power=14)
 
     # Configure LoRa
     lora.frequency(864000000)
@@ -104,3 +100,4 @@ def complete_round(config):
     for i in range(5):
         s.send('done'+'1'*28)
         sleep(1)
+    s.close()

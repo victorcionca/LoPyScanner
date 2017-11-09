@@ -2,6 +2,7 @@ from network import LoRa
 import socket
 import ujson
 from time import sleep
+from math import sqrt
 
 # Global variable to store the number of packets received from A
 a_pdr = 0
@@ -26,11 +27,22 @@ def setup(config):
     lora.bandwidth(bw[config['bw_idx']][1])
     lora.coding_rate(cr[config['cr_idx']][1])
 
+def get_stats(values):
+    """Returns mean and stddev for the given list"""
+    if len(values) == 0:
+        return 0,0
+
+    mean = sum(values)/float(len(values))
+    stddev = math.sqrt(sum((x-mean)**2 for x in values)/(len(values)-1))
+
+    return mean, stddev
+
+
 def eval_tx_power():
     """
     Receives the sender probes and evaluates their tx power
     """
-    sender_probes = {'A':[0,0], 'B':[0,0]}
+    sender_probes = {'A':[], 'B':[]}
 
     # Start sending
     s = socket.socket(socket.AF_LORA, socket.SOCK_RAW)
@@ -44,20 +56,13 @@ def eval_tx_power():
             continue
         if node_id[:4] == 'node':
             stats = lora.stats()
-            sender_probes[node_id[4]][0] += stats.rssi
-            sender_probes[node_id[4]][1] += 1
+            sender_probes[node_id[4]][0].append(stats.rssi)
         elif node_id[:4] == 'done':
             break
-    if sender_probes['A'][1] > 0:
-        sender_probes['A'][0] /= sender_probes['A'][1]
-    else:
-        sender_probes['A'][0] = 0
-    if sender_probes['B'][1] > 0:
-        sender_probes['B'][0] /= sender_probes['B'][1]
-    else:
-        sender_probes['B'][0] = 0
+    stats_a = get_stats(sender_probes['A'])
+    stats_b = get_stats(sender_probes['B'])
 
-    print(sender_probes['A'][0], sender_probes['B'][0])
+    print(stats_a, stats_b)
     s.close()
 
 def run_one_round():

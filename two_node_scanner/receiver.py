@@ -30,27 +30,34 @@ def eval_tx_power():
     """
     Receives the sender probes and evaluates their tx power
     """
-    sender_probes = {'A':0, 'B':0}
+    sender_probes = {'A':[0,0], 'B':[0,0]}
 
     # Start sending
     s = socket.socket(socket.AF_LORA, socket.SOCK_RAW)
     s.setblocking(False)
 
-    collected = 0
-    while collected < 20:
+    while True:
         p = s.recv(32)
         node_id = str(p[:5], 'utf-8')
-        if len(p) < 32 or node_id[:4] != 'node':
+        if len(p) < 32:
             sleep(0.05)
             continue
-        else:
+        if node_id[:4] == 'node':
             stats = lora.stats()
-            sender_probes[node_id[5]] += stats.rssi
-            collected += 1
-    sender_probes['A'] /= 10.0
-    sender_probes['B'] /= 10.0
+            sender_probes[node_id[4]][0] += stats.rssi
+            sender_probes[node_id[4]][1] += 1
+        elif node_id[:4] == 'done':
+            break
+    if sender_probes['A'][1] > 0:
+        sender_probes['A'][0] /= sender_probes['A'][1]
+    else:
+        sender_probes['A'][0] = 0
+    if sender_probes['B'][1] > 0:
+        sender_probes['B'][0] /= sender_probes['B'][1]
+    else:
+        sender_probes['B'][0] = 0
 
-    print(sender_probes['A'], sender_probes['B'])
+    print(sender_probes['A'][0], sender_probes['B'][0])
     s.close()
 
 def run_one_round():
@@ -61,6 +68,7 @@ def run_one_round():
 
     # Clear the round
     a_pdr = 0
+    b_pdr = 0
 
     # Sleep a while to ensure that configuration is set
     sleep(2)
@@ -68,6 +76,15 @@ def run_one_round():
     # Open the lora socket
     s = socket.socket(socket.AF_LORA, socket.SOCK_RAW)
     s.setblocking(False)
+
+    # Try to flush any 'done' messages in the Q
+    while True:
+        try:
+            p=s.recv(32)
+        except OSError:
+            break
+        if len(p) < 32:
+            break
 
     # First thing is to broadcast the synch message
     s.send('synch')
@@ -79,14 +96,18 @@ def run_one_round():
         if len(p) < 32:
             sleep(0.05)
             continue
-        if node_id[4] == 'node':
+        if node_id[:4] == 'node':
+            #print('Valid packet')
             stats = lora.stats()
-            if node_id[5] == 'A':
+            if node_id[4] == 'A':
                 a_pdr += 1
-        elif node_id[4] == 'done':
+            if node_id[4] == 'B':
+                b_pdr += 1
+        elif node_id[:4] == 'done':
+            #print('Done packet')
             break
         else:
             continue
 
     s.close()
-    print(a_pdr)
+    print(a_pdr, b_pdr)

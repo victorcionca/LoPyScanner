@@ -14,7 +14,7 @@ LOCAL_RESULT_PATH='results/result_%05d'
 PORT=12345
 
 def write_configuration(sf, bw_idx, CR_idx):
-    config_str = "config = {{'sf':{0}, 'bw_idx':{1}, 'cr_idx':{2}}}"\
+    config_str = "{{'sf':{0}, 'bw_idx':{1}, 'cr_idx':{2}}}"\
                             .format(sf, bw_idx, CR_idx)
     return config_str
 
@@ -23,11 +23,6 @@ def write_configuration(sf, bw_idx, CR_idx):
 if len(sys.argv) < 2:
     print('Usage: server.py <tty>')
     sys.exit(1)
-
-# Setup interrupt signal handler
-signal.signal(signal.SIGINT, int_handler)
-
-first_time = True
 
 lopy_if = Pyboard(sys.argv[1])
 
@@ -42,11 +37,7 @@ print('Importing functions')
 output = lopy_if.exec_('import receiver')
 print('Receiver ready', output)
 
-s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-s.bind(('', PORT))
-
-round_stats = {'a_pwr':0, 'b_pwr':0, 'a_pdr':0}
+round_stats = {'a_pwr':0, 'b_pwr':0, 'a_pdr':0, 'b_pdr':0}
 
 def init_lopy(lopy_if, config):
     print('Rebooting')
@@ -58,13 +49,13 @@ def init_lopy(lopy_if, config):
     lopy_if.exec_('receiver.setup(%s)'%config)
     print('Receiver ready', output)
 
-def prepare_power_eval(sock, addr):
+def prepare_power_eval(pld, sock, addr):
     """
     First step, receive probe packets from the senders and
     measure their RX power.
     """
-    cfg_bytes, = sock.recvfrom(5)
-    [sf,bw_idx,cr_idx,a_pw,b_pw] = cfg_bytes
+    print('Power eval')
+    [sf,bw_idx,cr_idx,a_pw,b_pw] = pld[:5]
     cfg_str = write_configuration(sf,bw_idx,cr_idx)
     print('Starting power eval with config %s', cfg_str)
     # Prepare receiver for a new round. Blocking, <2s
@@ -73,45 +64,62 @@ def prepare_power_eval(sock, addr):
     lopy_if.exec_no_follow('receiver.eval_tx_power()')
     # Read average values from receiver. Blocking, takes 20s
     output = lopy_if.follow(timeout=None)
+    print('Eval output: %s'%str(output))
     # Store these values in global variables
-    round_stats['a_pwr'] = int(output.split())[0]
-    round_stats['b_pwr'] = int(output.split())[1]
+    round_stats['a_pwr'] = int(float(output[0].split()[0]))
+    round_stats['b_pwr'] = int(float(output[0].split()[1]))
     print(round_stats)
 
-def start_experiment(sock, addr):
-    cfg_bytes, = sock.recvfrom(5)
-    [sf,bw_idx,cr_idx,a_pw,b_pw] = cfg_bytes
-    cfg_str = write_configuration(sf,bw_idx,cr_idx)
+def start_experiment(pld, sock, addr):
+    [sf,bw_idx,cr_idx,a_pw,b_pw] = pld[:5]
+    #cfg_str = write_configuration(sf,bw_idx,cr_idx)
     # Tell RX to signal start exp to the two senders.
     print('Starting experiment')
     lopy_if.exec_no_follow('receiver.run_one_round()')
-    a_pdr = lopy_if.follow(timeout=None)
-    round_stats['a_pdr'] = int(a_pdr)
+    pdrs = lopy_if.follow(timeout=None)
+    print(pdrs)
+    round_stats['a_pdr'] = int(pdrs[0].split()[0])
+    round_stats['b_pdr'] = int(pdrs[0].split()[1])
     print('Experiment done. Stats: %s'%(str(round_stats)))
 
-def stop_experiment(sock, addr):
+def stop_experiment(pld, sock, addr):
     rslt_pkt = 'rslt'\
                 +chr(round_stats['a_pdr'])\
+                +chr(round_stats['b_pdr'])\
                 +chr(-round_stats['a_pwr'])\
                 +chr(-round_stats['b_pwr'])
-    print('All done. Reporting: %s'%rslt_pkt)
-    sock.sendto(rslt_pkt, addr)
+    sleep(5)
+    print('All done. Reporting: %s to %s'%(rslt_pkt, str(addr)))
+    sock.sendto(bytearray(rslt_pkt, 'utf-8'), addr)
     # Round is done
+
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.setblocking(False)
+s.bind(('', PORT))
 
 print('Done setup, waiting clients')
 while True:
     # Packet structure is 
     # 'next' | CFG_ID (2B) | SF | BW_idx | CR_idx | PW
     # In total 10B
-    rcvd, addr = s.recvfrom(4)
+    try:
+        rcvd, addr = s.recvfrom(20)
+    except socket.error:
+        sleep(0.5)
+        continue
+    print('Received')
+    print(str(rcvd), len(rcvd))
     if len(rcvd) < 4:
         print('Length is wrong')
+        sleep(0.5)
         continue
     # Run the corresponding function
     try:
         {'init': prepare_power_eval,
          'strt': start_experiment,
-         'fini': stop_experiment}[str(rcvd[:4], 'utf-8')](s, addr)
+         'fini': stop_experiment}[str(rcvd[:4], 'utf-8')](rcvd[4:], s, addr)
     except KeyError:
+        print('Unknown packet: %s'%rcvd[:4])
         continue
 
